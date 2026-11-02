@@ -34,6 +34,8 @@ input,select,button{
 .check input{width:auto}
 .check label{margin:0}
 button{background:#2674df;border:0;font-weight:bold;cursor:pointer}
+button.scanning{background:#159b68;animation:pulse 1.15s ease-in-out infinite}
+@keyframes pulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.45)}}
 .secondary{background:#344761}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
 .actions button{width:auto;min-width:110px}
@@ -117,7 +119,13 @@ th{color:#aebbd0}
 <option value="10">Top 10 gainers / losers</option>
 <option value="20">Top 20 gainers / losers</option>
 <option value="50">Top 50 gainers / losers</option>
+<option value="custom">Custom number</option>
 </select>
+</div>
+
+<div>
+<label>Custom pairs per side</label>
+<input id="customUniverse" type="number" value="40" min="1" step="1" disabled>
 </div>
 
 <div>
@@ -148,7 +156,17 @@ th{color:#aebbd0}
 
 <div class="check">
 <input id="useDea" type="checkbox">
-<label for="useDea">Enable DEA confirmation</label>
+<label for="useDea">Enable DEA confirmation (DIF above/below DEA)</label>
+</div>
+
+<div class="check">
+<input id="filterDifZero" type="checkbox">
+<label for="filterDifZero">DIF positive / negative</label>
+</div>
+
+<div class="check">
+<input id="filterDeaZero" type="checkbox">
+<label for="filterDeaZero">DEA positive / negative</label>
 </div>
 
 </div>
@@ -164,14 +182,14 @@ th{color:#aebbd0}
 <section class="panel">
 <div class="status">
 <span class="stat" id="state">Status: Idle</span>
-<span class="stat" id="duration">Last scan: —</span>
+<span class="stat" id="duration">Last scan duration: —</span>
 <span class="stat" id="scanned">Pairs scanned: 0</span>
 <span class="stat" id="updated">Updated: —</span>
 <span class="stat" id="counts">Bullish: 0 · Bearish: 0</span>
 </div>
 <div class="note">
-MACD histogram crossover is bar 1. Signals appear on bars 2, 3, 4 and 5.
-Signals disappear when bar 6 begins. Bar counting uses the MACD timeframe.
+MACD histogram crossover is bar 1. Signals remain eligible through bar 10 and disappear after bar 10. Bar counting uses the MACD timeframe.
+The DIF / DEA zero-line checkboxes use the selected DEA confirmation timeframe. Table DIF / DEA values show the MACD timeframe.
 DEA, RSI and Supertrend each have independent timeframe selections.
 MACD uses standard 12, 26, 9 settings. Supertrend uses ATR 10, multiplier 3.
 </div>
@@ -397,7 +415,7 @@ function render() {
  const makeRow=s=>`
  <tr>
  <td><b>${s.symbol}</b></td>
- <td>${s.bar}/5</td>
+ <td>${s.bar}/10</td>
  <td>${format(s.hist,7)}</td>
  <td>${format(s.dif,7)}</td>
  <td>${format(s.dea,7)}</td>
@@ -501,7 +519,7 @@ async function scan() {
   let bears=market.slice();
 
   if(universe!=='all'){
-   const n=Number(universe);
+   const n=universe==='custom'?Math.max(1,Math.floor(Number($('customUniverse').value)||1)):Number(universe);
 
    bulls=market.slice()
     .sort((a,b)=>b.change-a.change).slice(0,n);
@@ -527,6 +545,8 @@ async function scan() {
   const useRsi=$('useRsi').checked;
   const useSt=$('useSt').checked;
   const useDea=$('useDea').checked;
+  const filterDifZero=$('filterDifZero').checked;
+  const filterDeaZero=$('filterDeaZero').checked;
 
   const rsiMin=Number($('rsiMin').value);
   const rsiMax=Number($('rsiMax').value);
@@ -538,7 +558,7 @@ async function scan() {
 
    const intervals=new Set([macdTf]);
 
-   if(useDea) intervals.add(deaTf);
+   if(useDea||filterDifZero||filterDeaZero) intervals.add(deaTf);
    if(useRsi) intervals.add(rsiTf);
    if(useSt) intervals.add(stTf);
 
@@ -557,6 +577,15 @@ async function scan() {
    const bearBar=crossoverBar(macdValues.hist,'bear');
 
    const current=data[macdTf].length-1;
+
+   let zeroDif=macdValues.dif[current];
+   let zeroDea=macdValues.dea[current];
+   if(filterDifZero||filterDeaZero){
+    const zeroLineValues=macd(data[deaTf].map(k=>Number(k[4])));
+    const zi=zeroLineValues.dif.length-1;
+    zeroDif=zeroLineValues.dif[zi];
+    zeroDea=zeroLineValues.dea[zi];
+   }
 
    const rsi=useRsi?
     calculateRSI(data[rsiTf].map(k=>Number(k[4]))):null;
@@ -580,14 +609,17 @@ async function scan() {
 
    if(!item) return;
 
-   if(bullBar!==null && bullBar>=2 && bullBar<=5){
+   if(bullBar!==null && bullBar>=1 && bullBar<=10){
 
     const rsiPass=!useRsi||
      (rsi!==null && rsi>=rsiMin);
 
     const stPass=!useSt||st==='Bullish';
 
-    if(bullSet.has(symbol)&&rsiPass&&stPass&&deaBull){
+    const difZeroPass=!filterDifZero||zeroDif>0;
+    const deaZeroPass=!filterDeaZero||zeroDea>0;
+
+    if(bullSet.has(symbol)&&rsiPass&&stPass&&deaBull&&difZeroPass&&deaZeroPass){
      bullishResults.push({
       symbol,
       bar:bullBar,
@@ -602,14 +634,17 @@ async function scan() {
     }
    }
 
-   if(bearBar!==null && bearBar>=2 && bearBar<=5){
+   if(bearBar!==null && bearBar>=1 && bearBar<=10){
 
     const rsiPass=!useRsi||
      (rsi!==null && rsi<=rsiMax);
 
     const stPass=!useSt||st==='Bearish';
 
-    if(bearSet.has(symbol)&&rsiPass&&stPass&&deaBear){
+    const difZeroPass=!filterDifZero||zeroDif<0;
+    const deaZeroPass=!filterDeaZero||zeroDea<0;
+
+    if(bearSet.has(symbol)&&rsiPass&&stPass&&deaBear&&difZeroPass&&deaZeroPass){
      bearishResults.push({
       symbol,
       bar:bearBar,
@@ -644,7 +679,7 @@ async function scan() {
 
   const elapsed=((performance.now()-started)/1000).toFixed(1);
 
-  $('duration').textContent='Last scan: '+elapsed+' seconds';
+  $('duration').textContent='Last scan duration: '+elapsed+' seconds';
 
   busy=false;
  }
@@ -652,6 +687,8 @@ async function scan() {
 
 function stopScanner(){
  running=false;
+ $('startBtn').classList.remove('scanning');
+ $('startBtn').textContent='Start scanning';
 
  if(timer){
   clearInterval(timer);
@@ -666,6 +703,8 @@ function startScanner(){
  stopScanner();
 
  running=true;
+ $('startBtn').classList.add('scanning');
+ $('startBtn').textContent='SCANNING…';
 
  scan();
 
@@ -691,6 +730,10 @@ $('clearBtn').addEventListener('click',()=>{
  render();
  $('scanned').textContent='Pairs scanned: 0';
  $('state').textContent='Status: Results cleared';
+});
+
+$('universe').addEventListener('change',()=>{
+ $('customUniverse').disabled=$('universe').value!=='custom';
 });
 
 $('refresh').addEventListener('change',()=>{
